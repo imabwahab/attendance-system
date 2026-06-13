@@ -30,6 +30,7 @@ register_heif_opener()
 
 ENCODINGS_FILE = "encodings.pkl"
 ATTENDANCE_FILE = "attendance.csv"
+KNOWN_FACES_DIR = "known_faces"
 
 # Recognition threshold on Euclidean distance between 128-d embeddings.
 # face_recognition's pretrained model is tuned so that distances < ~0.6
@@ -49,6 +50,66 @@ def load_encodings():
         return {"encodings": [], "names": []}
     with open(ENCODINGS_FILE, "rb") as f:
         return pickle.load(f)
+
+
+def enroll_person_from_uploads(name, uploaded_files):
+    """
+    Visually enroll a person from uploaded photos (the UI equivalent of
+    enroll.py). For each photo we detect the face, compute its 128-d
+    embedding, save the photo into known_faces/<name>/, and append the new
+    embedding(s) to encodings.pkl.
+
+    We do BOTH so that (a) known_faces/ stays the reproducible source of
+    truth that enroll.py can rebuild from, and (b) the new person is usable
+    immediately without re-running the script. Returns (added, skipped).
+    """
+    safe_name = name.strip()
+    person_dir = os.path.join(KNOWN_FACES_DIR, safe_name)
+    os.makedirs(person_dir, exist_ok=True)
+
+    # Continue numbering after any photos already saved for this person.
+    existing = [f for f in os.listdir(person_dir)
+                if f.lower().endswith((".jpg", ".jpeg", ".png"))]
+    counter = len(existing)
+
+    new_encodings = []
+    added, skipped = 0, 0
+
+    for up in uploaded_files:
+        # HEIC works here because register_heif_opener() ran at import time.
+        pil_image = Image.open(up).convert("RGB")
+        image_np = np.array(pil_image)
+
+        # Same HOG detect + embed pipeline used everywhere else.
+        locations = face_recognition.face_locations(image_np, model="hog")
+        if not locations:
+            skipped += 1
+            continue
+        encs = face_recognition.face_encodings(
+            image_np, known_face_locations=[locations[0]]
+        )
+        if not encs:
+            skipped += 1
+            continue
+
+        # Persist the photo (normalized to JPEG) into known_faces/<name>/.
+        counter += 1
+        pil_image.save(os.path.join(person_dir, f"{counter}.jpg"), "JPEG")
+        new_encodings.append(encs[0])
+        added += 1
+
+    if new_encodings:
+        # Append to the existing database (or create it if missing).
+        data = {"encodings": [], "names": []}
+        if os.path.exists(ENCODINGS_FILE):
+            with open(ENCODINGS_FILE, "rb") as f:
+                data = pickle.load(f)
+        data["encodings"].extend(new_encodings)
+        data["names"].extend([safe_name] * len(new_encodings))
+        with open(ENCODINGS_FILE, "wb") as f:
+            pickle.dump(data, f)
+
+    return added, skipped
 
 
 def load_attendance():
@@ -243,9 +304,45 @@ def process_and_display(image_np, data):
         st.dataframe(pd.DataFrame(detail), use_container_width=True)
 
 
-tab_mark, tab_live, tab_records = st.tabs(
-    ["✅ Mark Attendance", "📷 Live Camera", "📋 View Records"]
+tab_enroll, tab_mark, tab_live, tab_records = st.tabs(
+    ["👤 Enroll Person", "✅ Mark Attendance", "📷 Live Camera", "📋 View Records"]
 )
+
+# ---- Tab 0: Enroll a new person (visual enrollment) ---------------------
+with tab_enroll:
+    st.subheader("Enroll a new person")
+    st.caption("Add someone without touching the file system: type their name, "
+               "upload a few clear photos, and click Enroll. This saves the "
+               "photos to known_faces/ and updates the database immediately.")
+
+    new_name = st.text_input("Person's name")
+    enroll_files = st.file_uploader(
+        "Upload 1–3 clear, front-facing photos",
+        type=["jpg", "jpeg", "png", "heic", "heif"],
+        accept_multiple_files=True,
+        key="enroll_uploader",
+    )
+
+    if st.button("Enroll", type="primary"):
+        if not new_name.strip():
+            st.error("Please enter a name.")
+        elif not enroll_files:
+            st.error("Please upload at least one photo.")
+        else:
+            with st.spinner("Detecting faces and building embeddings..."):
+                added, skipped = enroll_person_from_uploads(new_name, enroll_files)
+            if added:
+                st.success(f"Enrolled {added} photo(s) for '{new_name.strip()}'.")
+            if skipped:
+                st.warning(f"{skipped} photo(s) had no detectable face and "
+                           f"were skipped.")
+            if not added and not skipped:
+                st.warning("Nothing to enroll.")
+            if added:
+                # Clear the cached database so the sidebar count and the
+                # recognition tabs immediately see the newly enrolled person.
+                load_encodings.clear()
+                st.rerun()
 
 # ---- Tab 1: Mark Attendance (upload) ------------------------------------
 with tab_mark:
