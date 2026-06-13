@@ -1,0 +1,30 @@
+# ==========================================================================
+# Pure-wheel dependencies (install normally).
+# face_recognition / dlib are intentionally NOT listed here — they must be
+# installed separately to avoid pip trying to COMPILE dlib from source on
+# Windows (which fails without a working MSVC toolchain). See README "Setup".
+# ==========================================================================
+
+# face_recognition / dlib are not reliable with NumPy 2.x, so pin below 2.0.
+numpy>=1.24,<2.0
+
+streamlit>=1.30
+opencv-python>=4.8
+pillow>=10.0
+pillow-heif>=0.13   # adds HEIC/HEIF (iPhone photo) support to Pillow
+pandas>=2.0
+click>=8.0          # runtime dependency of face_recognition (CLI)
+
+# ==========================================================================
+# Face recognition stack — install these MANUALLY, in this order:
+#
+#   pip install dlib-bin
+#   pip install --no-deps face_recognition_models face_recognition
+#
+# Why:
+#   * dlib-bin ships a PREBUILT dlib wheel (provides `import dlib`) so you do
+#     NOT need CMake / Visual Studio Build Tools.
+#   * face_recognition's metadata depends on the SOURCE package `dlib`, which
+#     pip would try to compile and fail. `--no-deps` skips that; dlib-bin
+#     already satisfies the actual `import dlib` requirement at runtime.
+# ==========================================================================
